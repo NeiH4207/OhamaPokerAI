@@ -28,8 +28,10 @@ class Player(object):
         self.bankroll = 0
         self.last_win_chips = 0
         self.last_state = None
-        self.last_action = None
+        self.last_action_log_prob = None
+        self.last_value_pred = None
         self.nnet = nnet
+        self.chip_history = []
         
     def set_bankroll(self, bankroll):
         self.bankroll = bankroll
@@ -90,12 +92,14 @@ class Player(object):
     def get_card_list(self):
         return self.hand.get_card_list()
     
-    def get_action(self, state, get_max=False): # 0: fold, 1: all-in
+    def get_action(self, state): # 0: fold, 1: all-in
         self.last_state = state
-        # state = Variable(torch.from_numpy(state).float().unsqueeze(0))
-        if get_max:
-            action = self.nnet.predict(state)
-        else:
-            action = self.nnet.get_action(state)
+        action, action_log_prob, state_value_pred = self.nnet.select_action(state)
+        self.last_action_log_prob = action_log_prob
+        self.last_value_pred = state_value_pred
+        return action
+    
+    def select_action(self, state):
+        action = self.get_action(state)
         self.last_action = action
         return action

@@ -16,8 +16,8 @@ class Card(object):
         return (self.rank - 2) * 4 + self.suit
 
     def to_vec(self):
-        vec = np.zeros(52, dtype=np.uint8)
-        vec[self.to_num()] = 1
+        vec = np.zeros((4, 52), dtype=np.uint8)
+        vec[self.suit, self.rank - 2] = 1
         return vec
     
     def __str__(self):

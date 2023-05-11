@@ -9,10 +9,12 @@ import itertools
 import numpy as np
 from models.PokerNet import PokerNet
 from collections import deque
+from matplotlib import pyplot as plt
+import seaborn as sns
 
 class Game(object):
     def __init__(self, n_players=4, big_blind=10, 
-                 playerNames=list(), n_epochs=15000,
+                 playerNames=list(), n_games=1000001,
                  model_path=None):
         self.n_players = n_players
         self.big_blind = big_blind
@@ -20,8 +22,8 @@ class Game(object):
         self.small_blind_index = random.randint(0, self.n_players - 1)
         self.buyin_amount = 10 * self.big_blind
         self.cards = []
-        self.input_dim = 52 * 7 + self.n_players * 3 + 4
-        self.model = PokerNet(self.input_dim, 128, 2)
+        self.input_dim = 52 * 4 * 2 + 16
+        self.model = PokerNet(self.input_dim, 256, 2)
         self.playerNames = playerNames
         self.players = [Player(id=i, chips=0, name=playerNames[i],
                                nnet=self.model) for i in range(self.n_players)]
@@ -32,11 +34,11 @@ class Game(object):
         self.action_list = []
         self.total_pot = 0
         self.num_cards_in_hold = 4
-        self.n_epochs = n_epochs
+        self.n_games = n_games
         self.model_path = model_path
         for i in range(self.n_players):
             # random from 100 to 1000 big blind
-            self.players[i].set_bankroll(random.randint(100, 100) * self.big_blind)
+            self.players[i].set_bankroll(random.randint(300, 300) * self.big_blind)
     
     def load_model(self, model_path):
         self.model.load(model_path)
@@ -110,12 +112,23 @@ class Game(object):
         action_state = np.array(actions, dtype=np.float32)
         player_order = np.eye(self.n_players)[player_order]
         action_state = np.concatenate([action_state, player_order])
-        all_cards = self.dealer.hand.get_card_list() + self.players[player_id].hand.get_card_list()
+        all_combo = []
+        for pair in itertools.combinations(self.players[player_id].hand.get_card_list(), 2):
+            combo = self.dealer.hand.get_card_list() + list(pair)
+            all_combo.append(combo)
         embeding_cards = []
-        for card in all_cards:
-            embeding_cards.extend(card.to_vec())
+        embed_vec_hole_cards = np.zeros((4, 52), dtype=np.float32)
+        for card in self.players[player_id].hand.get_card_list():
+            embed_vec_hole_cards += card.to_vec()
+        embeding_cards.append(embed_vec_hole_cards)
+        
+        embed_vec_common_cards = np.zeros((4, 52), dtype=np.float32)
+        for card in self.dealer.hand.get_card_list():
+            embed_vec_common_cards += card.to_vec()
+        embeding_cards.append(embed_vec_common_cards)
+        
         embeding_cards = np.array(embeding_cards, dtype=np.float32)
-        state = np.concatenate([action_state, embeding_cards])
+        state = [embeding_cards, action_state]
         return state
 
     def deal_hole(self, n_cards=4):
@@ -249,18 +262,32 @@ class Game(object):
     def play(self):
         self.model.eval()
         self.data = []
+        ranking_orders = []
         while True:
             self.clear_board()
-            if self.get_num_active_players() < 2:
-                print("Not enough players to play")
-                break
             for player in self.players:
                 if player.active:
                     player.buy_in(self.buyin_amount)
                     if player.chips == 0:
                         player.active = False
+                        ranking_orders.append(player.name)
                         print(bcolors.WARNING + "Player not enough chips to play" + bcolors.ENDC)
-                        
+                player.chip_history.append(player.bankroll)
+                # Visualize chip histories
+            fig, ax = plt.subplots()
+            for player in self.players:
+                ax.plot(player.chip_history, label=player.name)
+            ax.legend()
+            ax.set_xlabel('Hands played')
+            ax.set_ylabel('Chips')
+            plt.savefig('chip_history.png')
+                  
+            if self.get_num_active_players() < 2:
+                print("Not enough players to play")
+                active_players = [player for player in self.players if player.active]
+                ranking_orders.extend([player.name for player in active_players])
+                return ranking_orders
+            
             self.deal_hole(n_cards=self.num_cards_in_hold)
             self.deal_flop()
             # self.show_hold_cards()
@@ -296,7 +323,7 @@ class Game(object):
                                                                            self.players[idx].best_hand.basic_str(),
                                                                            hand_name))
                     print(self.players[idx].hand)
-                    action = self.players[idx].get_action(self.get_embeding_state(idx), get_max=True)
+                    action = self.players[idx].select_action(self.get_embeding_state(idx))
                     print("Action recommend: {}".format(['fold', 'all_in'][action]))
                     print(bcolors.WARNING + "Do you want to all-in, {}? (y/n)".format(self.players[idx].name) + bcolors.ENDC)
                     inputs = input()
@@ -305,9 +332,9 @@ class Game(object):
                     else:
                         action = 'fold'
                 else:
-                    action = self.players[idx].get_action(self.get_embeding_state(idx), get_max=True)
+                    action = self.players[idx].select_action(self.get_embeding_state(idx))
                     action = ['fold', 'all_in'][action]
-                    print(bcolors.WARNING + "Player {} choose {}".format(self.players[idx].name, action) + bcolors.ENDC)
+                    # print(bcolors.WARNING + "Player {} choose {}".format(self.players[idx].name, action) + bcolors.ENDC)
                 if action == 'all_in':
                     self.players[idx].all_in = True
                     self.total_pot += self.players[idx].chips
@@ -323,14 +350,14 @@ class Game(object):
                 print("All of players fold, player {} win!".format(winners[0][0].name))
                 self.divide_pot(winners)
                 self.small_blind_index = (self.small_blind_index + 1) % self.n_players
-                input("")
+                # input("")
                 continue
                 
             self.deal_turn()
             self.deal_river()   
             # os.system('cls' if os.name == 'nt' else 'clear')  
-            self.show_hold_cards() 
-            print(self.dealer.hand)
+            # self.show_hold_cards() 
+            # print(self.dealer.hand)
             winners = self.get_winners()
             self.divide_pot(winners)
             for winner in winners[0]:
@@ -338,22 +365,33 @@ class Game(object):
                     winner.name, winner.last_win_chips, winner.best_hand.basic_str()) + bcolors.ENDC \
                         + " as a\033[0m {}".format(self.deck.get_hand_name(winner.best_hand.get_card_list())))
             self.small_blind_index = (self.small_blind_index + 1) % self.n_players
-            input("")
+            # input("")
+            
+            
     
     def simulate(self):
         data = {
-            'state': deque(maxlen=512),
-            'action': deque(maxlen=512),
-            'reward': deque(maxlen=512),
+            'state': deque(maxlen=32768),
+            'action_log_prob': deque(maxlen=32768),
+            'reward': deque(maxlen=32768),
+            'value_pred': deque(maxlen=32768),
         }
-        for epoch in range(self.n_epochs):
-            # Train model each 10 epochs
-            if (epoch + 1) % 10 == 0:
-                loss = self.model._training(data)
-                if (epoch+ 1) % 100 == 0:
-                    print("Epoch: {}, Expected value: {}".format(epoch, loss))
-                    path = os.path.join(self.model_path, 'model_{}.pt'.format(epoch))
-                    self.model.save(path)
+        fold_counter = 0
+        all_in_counter = 0
+        
+        for idx, game in enumerate(range(self.n_games)):
+            # Train model each 10 games
+            if idx > 0 and (idx) % 100 == 0 and len(data['reward']) % 32 > 1:
+                v = self.model._training(data)
+        
+                print("Game: {}, Expected value: {} | All-in rate: {}".\
+                    format(idx, v, np.round(all_in_counter / (fold_counter + all_in_counter + 1e-8), 3)))
+                fold_counter = 0
+                all_in_counter = 0
+                    
+            if (idx) % 100 == 0:
+                path = os.path.join(self.model_path, 'model_{}.pt'.format(game))
+                self.model.save(path)
                     
             self.clear_board()
             
@@ -395,10 +433,12 @@ class Game(object):
                     self.total_pot += self.players[idx].chips
                     self.players[idx].stake += self.players[idx].chips
                     self.players[idx].chips = 0
+                    all_in_counter += 1
                 else:
                     self.players[idx].all_in = False
                     self.players[idx].fold = True  
                     fold_count += 1
+                    fold_counter += 1
             
             if all_of_fold:
                 winners = self.get_winners()
@@ -409,10 +449,12 @@ class Game(object):
                 
                 for player in self.players:
                     if player.active:
-                        if player.last_action is not None:
+                        if player.last_action_log_prob is not None:
                             data['state'].append(player.last_state)
-                            data['action'].append(player.last_action)
-                            data['reward'].append(player.last_win_chips)
+                            data['action_log_prob'].append(player.last_action_log_prob)
+                            data['reward'].append(player.last_win_chips / self.big_blind)
+                            data['value_pred'].append(player.last_value_pred)
+                            player.last_action_log_prob = None
                 continue
                 
             self.deal_turn()
@@ -424,8 +466,10 @@ class Game(object):
             for player in self.players:
                 if player.active:
                     data['state'].append(player.last_state)
-                    data['action'].append(player.last_action)
-                    data['reward'].append(player.last_win_chips)
+                    data['action_log_prob'].append(player.last_action_log_prob)
+                    data['reward'].append(player.last_win_chips / self.big_blind)
+                    data['value_pred'].append(player.last_value_pred)
+                    player.last_action_log_prob = None
                         
             self.small_blind_index = (self.small_blind_index + 1) % self.n_players
             
